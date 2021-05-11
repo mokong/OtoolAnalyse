@@ -30,6 +30,7 @@ static NSString *kConstPrefix = @"Contents of (__DATA";
 static NSString *kQueryClassList = @"__objc_classlist";
 static NSString *kQueryClassRefs = @"__objc_classrefs";
 static NSString *kQuerySuperRefs = @"__objc_superrefs";
+static NSString *kQuerySelRefs = @"__objc_selrefs";
 
 @implementation ViewController
 
@@ -86,34 +87,53 @@ static NSString *kQuerySuperRefs = @"__objc_superrefs";
             
         });
         
-        // 所有classList类和类名字
-        NSDictionary *classListDic = [self classListFromContent:content];
-        // 所有引用的类
-        NSArray *classRefs = [self classRefsFromContent:content];
-//        // 所有引用的父类
-//        NSArray *superRefs = [self superRefsFromContent:content];
-        
-        // 先把类和父类数组做去重
-        NSMutableSet *refsSet = [NSMutableSet setWithArray:classRefs];
-//        [refsSet addObjectsFromArray:superRefs];
-        
-        // 所有在refsSet中的都是已使用的，遍历classList，移除refsSet中涉及的类
-        // 余下的就是多余的类
-        // 移除系统类，比如SceneDelegate，或者Storyboard中的类
-        for (NSString *address in refsSet.allObjects) {
-            [classListDic setValue:nil forKey:address];
-        }
-        
-        NSLog(@"多余的类如下：%@", classListDic);
-        
         __block NSControlStateValue groupButtonState;
         dispatch_sync(dispatch_get_main_queue(), ^{
             groupButtonState = _groupButton.state;
         });
         
         if (1 == groupButtonState) { // 查找多余的方法
-
+            NSMutableDictionary *methodsListDic = [self allSelRefsFromContent:content];
+            NSMutableDictionary *selRefsDic = [self selRefsFromContent:content];
+            
+            // 遍历selRefs移除methodsListDic，剩下的就是未使用的
+            for (NSString *methodAddress in selRefsDic.allKeys) {
+                for (NSDictionary *methodDic in methodsListDic.allValues) {
+                    [methodDic setValue:nil forKey:methodAddress];
+                }
+            }
+            
+            // 遍历移除空的元素
+            NSMutableDictionary *resultDic = [NSMutableDictionary dictionary];
+            for (NSString *classNameStr in methodsListDic.allKeys) {
+                NSDictionary *methodDic = [methodsListDic valueForKey:classNameStr];
+                if (methodDic.count > 0) {
+                    [resultDic setValue:methodDic forKey:classNameStr];
+                }
+            }
+            
+            NSLog(@"多余的方法如下%@", resultDic);
+            [self buildResultWithDictionary:resultDic groupBtnState:groupButtonState];
         } else { // 查找多余的类
+            // 所有classList类和类名字
+            NSDictionary *classListDic = [self classListFromContent:content];
+            // 所有引用的类
+            NSArray *classRefs = [self classRefsFromContent:content];
+    //        // 所有引用的父类
+    //        NSArray *superRefs = [self superRefsFromContent:content];
+            
+            // 先把类和父类数组做去重
+            NSMutableSet *refsSet = [NSMutableSet setWithArray:classRefs];
+    //        [refsSet addObjectsFromArray:superRefs];
+            
+            // 所有在refsSet中的都是已使用的，遍历classList，移除refsSet中涉及的类
+            // 余下的就是多余的类
+            // 移除系统类，比如SceneDelegate，或者Storyboard中的类
+            for (NSString *address in refsSet.allObjects) {
+                [classListDic setValue:nil forKey:address];
+            }
+            
+            NSLog(@"多余的类如下：%@", classListDic);
             [self buildResultWithDictionary:classListDic groupBtnState:groupButtonState];
         }
         
@@ -125,6 +145,107 @@ static NSString *kQuerySuperRefs = @"__objc_superrefs";
         });
     });
 }
+
+#pragma mark - 方法分析
+
+// 获取已使用的方法集合
+- (NSMutableDictionary *)selRefsFromContent:(NSString *)content {
+    // 符号文件列表
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
+    
+    NSMutableDictionary *selRefsResults = [NSMutableDictionary dictionary];
+
+    BOOL selRefsBegin = NO;
+    
+    for(NSString *line in lines) {
+       if ([line containsString:kConstPrefix] && [line containsString:kQuerySelRefs]) {
+           selRefsBegin = YES;
+            continue;;
+        }
+        else if (selRefsBegin && [line containsString:kConstPrefix]) {
+            selRefsBegin = NO;
+            break;
+        }
+        
+        if(selRefsBegin) {
+            NSArray *components = [line componentsSeparatedByString:@" "];
+            if (components.count > 2) {
+                NSString *methodName = [components lastObject];
+                NSString *methodAddress = components[components.count - 2];
+                [selRefsResults setValue:methodName forKey:methodAddress];
+            }
+        }
+    }
+
+    NSLog(@"\n\n__objc_selrefs总结如下，共有%ld个\n%@：", selRefsResults.count, selRefsResults);
+    return selRefsResults;
+}
+
+// 获取所有方法集合 { className:{ address: methodName } }
+- (NSMutableDictionary *)allSelRefsFromContent:(NSString *)content {
+    // 符号文件列表
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
+
+    NSMutableDictionary *allSelResults = [NSMutableDictionary dictionary];
+    
+    BOOL allSelResultsBegin = NO;
+    BOOL canAddName = NO;
+    BOOL canAddMethods = NO;
+    NSString *className = @"";
+    
+    NSMutableDictionary *methodDic = [NSMutableDictionary dictionary];
+    
+    for (NSString *line in lines) {
+        if ([line containsString:kConstPrefix] && [line containsString:kQueryClassList]) {
+            allSelResultsBegin = YES;
+            continue;
+        }
+        else if (allSelResultsBegin && [line containsString:kConstPrefix]) {
+            allSelResultsBegin = NO;
+            break;
+        }
+        
+        if (allSelResultsBegin) {
+            if ([line containsString:@"data"]) {
+                if (methodDic.count > 0) {
+                    [allSelResults setValue:methodDic forKey:className];
+                    methodDic = [NSMutableDictionary dictionary];
+                }
+                // data之后第一个的name，是类名
+                canAddName = YES;
+                canAddMethods = NO;
+                continue;
+            }
+            
+            if (canAddName && [line containsString:@"name"]) {
+                // 更新类名，用作标记{ className:{ address: methodName } }
+                NSArray *components = [line componentsSeparatedByString:@" "];
+                className = [components lastObject];
+                continue;
+            }
+            
+            if ([line containsString:@"methods"] || [line containsString:@"Methods"]) {
+                // method之后的name是方法名，和方法地址
+                canAddName = NO;
+                canAddMethods = YES;
+                continue;
+            }
+            
+            if (canAddMethods && [line containsString:@"name"]) {
+                NSArray *components = [line componentsSeparatedByString:@" "];
+                if (components.count > 2) {
+                    NSString *methodAddress = components[components.count-2];
+                    NSString *methodName = [components lastObject];
+                    [methodDic setValue:methodName forKey:methodAddress];
+                }
+                continue;
+            }
+        }
+    }
+    return allSelResults;
+}
+
+#pragma mark - 类分析
 
 // 获取classrefs
 - (NSArray *)classRefsFromContent:(NSString *)content {
@@ -236,18 +357,27 @@ static NSString *kQuerySuperRefs = @"__objc_superrefs";
 - (void)buildResultWithDictionary:(NSDictionary *)targetDic groupBtnState:(NSInteger)groupBtnState {
     if (groupBtnState == 1) {
         self.result = [@"方法地址\t方法名称\r\n\r\n" mutableCopy];
+        for (NSString *className in targetDic.allKeys) {
+            NSDictionary *methodDic = targetDic[className];
+            [_result appendFormat:@"%@\t\r\n", className];
+            for (NSString *methodAddress in methodDic.allKeys) {
+                NSString *methodName = methodDic[methodAddress];
+                [_result appendFormat:@"\t\t\t\t\t%@\t%@\r\n", methodAddress, methodName];
+            }
+        }
     }
     else {
         self.result = [@"文件地址\t文件名称\r\n\r\n" mutableCopy];
-    }
-    
-    for (NSString *address in targetDic.allKeys) {
-        NSString *name = targetDic[address];
-        [_result appendFormat:@"%@\t%@\r\n", address, name];
+        for (NSString *address in targetDic.allKeys) {
+            NSString *name = targetDic[address];
+            [_result appendFormat:@"%@\t%@\r\n", address, name];
+        }
     }
     
     [_result appendFormat:@"\r\n总计: %ld个\r\n", (long)targetDic.count];
 }
+
+#pragma mark - actions
 
 - (IBAction)ouputFile:(id)sender {
     NSOpenPanel* panel = [NSOpenPanel openPanel];
@@ -272,6 +402,8 @@ static NSString *kQuerySuperRefs = @"__objc_superrefs";
         }
     }];
 }
+
+#pragma mark - utils
 
 - (BOOL)checkContent:(NSString *)content {
     NSRange objsFileTagRange = [content rangeOfString:kConstPrefix];
