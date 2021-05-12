@@ -327,7 +327,7 @@ static NSString *kQuerySelRefs = @"__objc_selrefs";
         }
         else if ([line containsString:kConstPrefix]) {
             classListBegin = NO;
-            break;;
+            break;
         }
 
         if (classListBegin) {
@@ -338,14 +338,12 @@ static NSString *kQuerySelRefs = @"__objc_selrefs";
                 canAddName = YES;
             }
             else {
-                if (classListBegin) {
-                    if (canAddName && [line containsString:@"name"]) {
-                        NSArray *components = [line componentsSeparatedByString:@" "];
-                        NSString *className = [components lastObject];
-                        [classListResults setValue:className forKey:addressStr];
-                        addressStr = @"";
-                        canAddName = NO;
-                    }
+                if (canAddName && [line containsString:@"name"]) {
+                    NSArray *components = [line componentsSeparatedByString:@" "];
+                    NSString *className = [components lastObject];
+                    [classListResults setValue:className forKey:addressStr];
+                    addressStr = @"";
+                    canAddName = NO;
                 }
             }
         }
